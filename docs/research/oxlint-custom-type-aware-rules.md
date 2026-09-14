@@ -1,51 +1,68 @@
 # Type-aware custom Oxlint rules: dependency and architecture research
 
-**Research date:** 2026-08-08  
-**Scope:** Oxlint/Oxc 1.76.0, `oxlint-tsgolint` 7.0.2001, their current first-party documentation and issue state, TypeScript/typescript-eslint first-party documentation, pinned package source, and this repository. No application or lint code was changed.
+**Research date:** 2026-08-08; installed-tooling revalidation 2026-09-05
+
+**Scope:** the repository's installed Oxlint, Vite+, plugin, tsgolint, and TypeScript packages; first-party documentation; pinned package source; and this repository. Installed API facts marked 2026-09-05 were revalidated then; upstream issue, roadmap, and project-status statements remain evidence from the original 2026-08-08 research unless explicitly marked otherwise. No application, configuration, dependency, or lint code was changed.
 
 ## Recommendation
 
-**Do not add `typescript`, `@typescript-eslint/utils`, `ts-morph`, or tsquery to the existing Oxlint JavaScript plugin in an attempt to make its rules semantic.** Oxlint 1.76.0 deliberately gives JS plugins an empty `parserServices` object, and Oxlint's separate `tsgolint` process does not expose its TypeScript program or checker to JS. Importing a compiler in the plugin would create a second, plugin-owned project model; it would not reuse Oxlint/tsgolint's programs, AST, source overlays, project assignment, or caches.
+**Do not add `typescript`, `@typescript-eslint/utils`, `ts-morph`, or tsquery to the existing Oxlint JavaScript plugin in an attempt to make its rules semantic.** Both installed plugin API copies give JavaScript plugins an empty `parserServices` object, and Oxlint's separate `tsgolint` process does not expose its TypeScript program or checker to JavaScript. Importing a compiler in the plugin would create a second, plugin-owned project model; it would not reuse Oxlint/tsgolint's programs, AST, source overlays, project assignment, or caches.
 
 For the three rules:
 
 1. **Keep `anti-slop/no-chained-type-assertions` as a syntax-only Oxlint JS rule.** Its question—whether assertion nodes are nested, except an all-`const` chain—is syntactic. Type information would add cost without improving that invariant.
 2. **Keep the existing conservative syntax checks for `no-known-value-widening` and `no-widen-then-assert` for immediate, cheap Oxlint feedback.** Their current source and tests intentionally stop where provenance cannot be established syntactically.
-3. **If the repository decides the currently documented false-negative space must be enforced, add one separate, read-only semantic checker using the TypeScript compiler API—not code inside the Oxlint plugin.** Run it once per check, group files by owning `tsconfig`, create/reuse one program per project, and add diagnostics only for semantic cases the JS rules intentionally skip (for example imported values, typed call results, resolved aliases, and symbol-identified local flows). At that point, add an explicit root `devDependency` on exactly the workspace TypeScript version (`7.0.2` at research time). Do not rely on the app's dependency or a hoisted/transitive package.
+3. **If the repository decides the currently documented false-negative space must be enforced, add one separate, read-only semantic checker using the TypeScript compiler API—not code inside the Oxlint plugin.** Run it once per check, group files by owning `tsconfig`, create/reuse one program per project, and add diagnostics only for semantic cases the JS rules intentionally skip (for example imported values, typed call results, resolved aliases, and symbol-identified local flows). At that point, add an explicit root `devDependency` matching the workspace compiler version selected by the installed toolchain. Do not rely on an app dependency or hoisted/transitive resolution.
 4. Treat a small, separate ESLint + typescript-eslint pass as the fallback when editor-integrated custom semantic lint diagnostics are more valuable than dependency/startup cost. Use `@typescript-eslint/parser` with `parserOptions.projectService: true` and write the rules with `@typescript-eslint/utils`; do not try to run those typed rules through Oxlint.
 5. Long term, propose generic versions upstream to typescript-eslint and then tsgolint. Do not fork either Oxc or tsgolint for three repository policy rules unless maintaining a compiler-coupled toolchain fork is explicitly acceptable.
 
 This means the answer to “should this repo add a TypeScript AST/type-checker dependency to make its custom Oxlint JS rules semantic?” is **no**. The answer becomes **yes, add only a direct `typescript` dependency** if and when a dedicated checker is approved as a separate check.
 
-## Current repository facts
+## Revalidate repository facts
 
-- The root pins `oxlint` and `@oxlint/plugins` to 1.76.0 but does not directly declare TypeScript or typescript-eslint ([root package](../../package.json)).
-- `apps/api` already directly depends on TypeScript 7.0.2, and the installed workspace has one TypeScript version. That does not make TypeScript a declared dependency of root tooling ([API package](../../apps/api/package.json), [installed TypeScript package](../../node_modules/typescript/package.json)). Adding the same root version would primarily make ownership and resolution explicit; in the current lock it need not introduce another compiler version.
-- Vite+ enables `typeAware` and `typeCheck`, loads the local `anti-slop` JS plugin, and enables both native type-aware TypeScript rules and the custom anti-slop rules ([lint config](../../vite.config.ts)). The type-aware backend is therefore already paid for once during `vp check`.
-- The root `tsconfig.json` covers root tooling; `apps/api/tsconfig.json` covers the app. There is currently one app and no populated package workspace ([root tsconfig](../../tsconfig.json), [API tsconfig](../../apps/api/tsconfig.json), [workspace config](../../pnpm-workspace.yaml)). A future checker still must be designed per project rather than around today's single app.
+Read the [root package](../../package.json), [lint config](../../vite.config.ts), local plugin
+entrypoints, workspace manifests, and project configs. Run `vp --version`; compare direct
+`oxlint --version` and resolve each command's Oxlint/plugin manifests when the distinction matters.
+
+The 2026-09-05 probe established these interpretation-sensitive facts:
+
+- The root direct command and Vite+'s bundled toolchain resolved different Oxlint/plugin copies.
+  Claims about plugin behavior must name the path actually exercised.
+- Both resolved JavaScript-plugin APIs/runtimes exposed AST and scope services with empty
+  `parserServices`; enabling root typechecking did not add TypeScript inference to custom rules.
+- Root tooling did not directly own the workspace TypeScript dependency. A future root semantic
+  checker therefore needs its own direct compiler dependency matching the installed toolchain.
+- Root lint configuration enabled native type-aware assertion rules and the local `anti-slop` and
+  `overseer` syntax plugins. The unnecessary-condition and exported-decoder-factory rules remained
+  proposals; see [`slop-prevention.md`](slop-prevention.md).
+- The root config covers tooling while apps and packages own project configs. A future checker must
+  group files by their current owning configs rather than build one broad synthetic program
+  ([root tsconfig](../../tsconfig.json), [API tsconfig](../../apps/api/tsconfig.json),
+  [workspace config](../../pnpm-workspace.yaml)).
 
 ## What Oxlint officially supports
 
 ### JS plugins do not receive type information
 
-Oxlint's JS-plugin guide lists AST traversal, source text/tokens, scope analysis, and control-flow analysis as supported, but explicitly lists “lint rules that rely on TypeScript type-awareness” as unsupported. JS plugins remain alpha ([JS plugins: API support](https://oxc.rs/docs/guide/usage/linter/js-plugins.html#api-support)). The alpha announcement is equally direct: “No custom type-aware rules” ([JS plugins alpha: limitations](https://oxc.rs/blog/2026-03-11-oxlint-js-plugins-alpha.html#what-it-can-t-do-yet)).
+At the original 2026-08-08 research point, Oxlint's JS-plugin guide listed AST traversal, source text/tokens, scope analysis, and control-flow analysis as supported, while listing TypeScript type-aware plugin rules as unsupported. JavaScript plugins were documented as alpha, and the alpha announcement stated “No custom type-aware rules” ([JS plugins: API support](https://oxc.rs/docs/guide/usage/linter/js-plugins.html#api-support), [JS plugins alpha: limitations](https://oxc.rs/blog/2026-03-11-oxlint-js-plugins-alpha.html#what-it-can-t-do-yet)). The installed empty-`parserServices` probe below, rather than an unrefreshed upstream-status claim, supports the repository decision.
 
-The pinned source is stronger evidence than API shape alone:
-
-- `SourceCode.parserServices` is typed only as `Readonly<Record<string, unknown>>` and documented “Oxlint does not offer any parser services” ([installed 1.76.0 types](../../node_modules/@oxlint/plugins/index.d.ts)).
-- The installed runtime sets it to a frozen empty object ([installed 1.76.0 runtime](../../node_modules/oxlint/dist/lint.js)).
-- The exact 1.76.0 source does the same ([tagged `source_code.ts`](https://github.com/oxc-project/oxc/blob/oxlint_v1.76.0/apps/oxlint/src-js/plugins/source_code.ts#L228-L234)).
+Resolved package source is stronger evidence than an assumed API shape. For both the root direct
+command and Vite+'s bundled path, resolve `@oxlint/plugins` and Oxlint from that command, then inspect
+`SourceCode.parserServices` in the plugin types and its runtime initialization. The 2026-09-05 probe
+found `Readonly<Record<string, unknown>>` documented as unavailable and a frozen empty runtime
+object in both paths. The [older tagged source](https://github.com/oxc-project/oxc/blob/oxlint_v1.76.0/apps/oxlint/src-js/plugins/source_code.ts#L228-L234)
+is historical corroboration only.
 
 Consequently, `options.typeAware: true` does **not** enrich a JS rule context. It starts a different backend for registered `typescript/*` rules.
 
-### Planned, but no usable commitment
+### Original upstream status evidence
 
-Two open first-party issues track the gap:
+On 2026-08-08, two first-party issues tracked the gap:
 
-- [`sourceCode.parserServices` is always empty](https://github.com/oxc-project/oxc/issues/19962) records that typed ESLint-compatible rules either silently stop or cannot obtain `program` and node maps. An Oxc maintainer confirms that type-aware rules are unsupported and calls the problem hard.
-- [Make type information available to custom JS plugins](https://github.com/oxc-project/oxc/issues/19596) remains open. A maintainer explains that typescript-go does not expose type information consumable by JS plugins and that repeated Go/JS boundary crossings risk destroying performance; the latest maintainer update says there is no update.
+- [`sourceCode.parserServices` is always empty](https://github.com/oxc-project/oxc/issues/19962) recorded that typed ESLint-compatible rules either silently stopped or could not obtain `program` and node maps. A maintainer described type-aware rules as unsupported and the problem as hard.
+- [Make type information available to custom JS plugins](https://github.com/oxc-project/oxc/issues/19596) was open. A maintainer explained that typescript-go did not expose type information consumable by JavaScript plugins and that repeated Go/JavaScript boundary crossings risked destroying performance; the latest update reviewed then reported no progress.
 
-Oxlint states an aspiration to complete the plugin API, but there is no released parser-services API, target release, or design on which this repo should build. “Planned” should be read as desired capability, not an actionable roadmap.
+At that research point, Oxlint expressed an aspiration to complete the plugin API without a released parser-services API, target release, or actionable design. Recheck the issues before making a current roadmap claim; the installed API remains the implementation authority.
 
 ### Oxlint type-aware rules are a separate tsgolint pipeline
 
@@ -55,14 +72,15 @@ This separation is why a JS plugin cannot “reach sideways” into the checker 
 
 ## Can `oxlint-tsgolint` load custom or third-party rules?
 
-**No, not in pinned 7.0.2001.** It supports configuration of its compiled-in rules, not loading rule implementations.
+**The version inspected on 2026-09-05 could not.** It supported configuration of compiled-in rules,
+not loading rule implementations. Reinspect the resolved package before relying on this conclusion.
 
 - The executable has a hard-coded `allRules` Go slice ([tagged registration](https://github.com/oxc-project/tsgolint/blob/v7.0.2001/cmd/tsgolint/main.go#L162-L222)).
 - Its headless payload accepts only rule `name` and `options` ([tagged payload](https://github.com/oxc-project/tsgolint/blob/v7.0.2001/cmd/tsgolint/payload.go#L19-L36)).
 - At execution, a name is looked up in the compiled map; an unknown rule panics ([tagged dispatch](https://github.com/oxc-project/tsgolint/blob/v7.0.2001/cmd/tsgolint/headless.go#L413-L437)).
-- The published package is a launcher plus platform-specific prebuilt binary, with no plugin API ([pinned package manifest](../../node_modules/oxlint-tsgolint/package.json)).
+- The resolved package manifest published a launcher plus platform-specific prebuilt binary, with no plugin API.
 
-The project README says it is not currently accepting new rules beyond those supported by typescript-eslint, while current focus includes rule coverage and configuration ([tsgolint README: status](https://github.com/oxc-project/tsgolint#status)). Thus the practical routes are (a) get a generic rule accepted by typescript-eslint and then tsgolint, or (b) maintain a fork/custom binary. There is no repository-local third-party rule mechanism.
+At the original research point, the project README said it was not accepting rules beyond those supported by typescript-eslint and was focused on rule coverage and configuration ([tsgolint README: status](https://github.com/oxc-project/tsgolint#status)). Combined with the inspected package mechanics, the practical routes were (a) get a generic rule accepted by typescript-eslint and then tsgolint, or (b) maintain a fork/custom binary. Recheck upstream policy before presenting those routes as current; the inspected package had no repository-local third-party rule mechanism.
 
 ## Should an Oxlint JS plugin import compiler packages itself?
 
@@ -90,7 +108,7 @@ Using `@typescript-eslint/utils` only for rule types or syntax helpers would add
 | ------------------------------------------------- | -------------------------------------------------------------------------------------- | -------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------ | --------------------------------------------------------------------------------------------------------------------------------------------------- |
 | Import TypeScript inside the Oxlint JS plugin     | Possible only by building an independent program and manually correlating AST nodes    | Cannot reuse tsgolint; uncertain plugin-local lifecycle                                      | Duplicate parsing/checking, stale editor text, hand-built node bridge, project discovery and cache complexity                                                | **Reject**                                                                                                                                          |
 | Native Oxc Rust rule                              | Oxc AST, scopes, symbols, and CFG; not the TypeScript checker used by type-aware rules | Reuses Oxc syntax semantics, not tsgolint types                                              | Upstream discussion/acceptance; Rust implementation; repository cannot load a local native rule without a fork/build                                         | Good only for syntax rules; no solution for true TS types                                                                                           |
-| Upstream tsgolint Go rule                         | Full typescript-go checker and existing program/workers                                | Best integration and consistency                                                             | No third-party loading; project currently accepts only typescript-eslint-supported rules; upstream lead time or costly fork                                  | Best long-term semantic home after upstream acceptance                                                                                              |
+| Upstream tsgolint Go rule                         | Full typescript-go checker and existing program/workers                                | Best integration and consistency                                                             | The inspected package had no third-party loading; original upstream policy accepted only typescript-eslint-supported rules; recheck current policy           | Best long-term semantic home after upstream acceptance                                                                                              |
 | Separate ESLint + typescript-eslint pass          | Full official parser services and checker maps                                         | One Project Service within the ESLint pass; no reuse of tsgolint                             | Adds ESLint/parser/utils/plugin dependencies and a second full semantic pass; slower startup/memory; duplicate configuration/reporting                       | Supported fallback when editor UX is required                                                                                                       |
 | Dedicated TypeScript compiler-API checker         | Full `Program`/`TypeChecker`; direct TS node identity                                  | Can create one program per tsconfig within its process; no reuse of tsgolint                 | Adds one direct compiler dependency and a second semantic pass; repository owns traversal, project discovery, diagnostics, tests, and optional watch caching | **Best local semantic option**                                                                                                                      |
 | `@typescript-eslint/project-service` in a checker | Full editor-style programs, nearest-project assignment, project references             | Shared service/programs within that checker; no reuse of tsgolint                            | More dependency/API surface than direct compiler API; still a separate semantic pass                                                                         | Consider only when monorepo/project-reference handling outgrows simple program grouping                                                             |
@@ -128,7 +146,7 @@ This does not avoid a second type-analysis pass beside tsgolint, but it avoids a
 
 Whichever separate semantic route is chosen:
 
-- **Pin one TypeScript semantic version.** `oxlint-tsgolint` 7.0.2001 tracks TypeScript 7.0.2 according to its versioning documentation, and the app currently declares `typescript` 7.0.2 ([tsgolint versioning](https://github.com/oxc-project/tsgolint#versioning), [API package](../../apps/api/package.json)). A root checker should pin that exact version to reduce JS-TypeScript/typescript-go disagreement.
+- **Pin one TypeScript semantic version.** Match the version pairing documented by the currently resolved tsgolint package and declared by the workspace ([tsgolint versioning](https://github.com/oxc-project/tsgolint#versioning), [API package](../../apps/api/package.json)). A root checker should pin that version directly to reduce JS-TypeScript/typescript-go disagreement.
 - **Use production tsconfigs, not a broad synthetic root config.** Oxlint's own guide warns that broad root includes create very large programs and recommends a files-empty root for monorepos ([Oxlint type-aware troubleshooting](https://oxc.rs/docs/guide/usage/linter/type-aware.html#common-performance-issues)). The current root config intentionally includes tooling while the API config includes application source; preserve that ownership.
 - **Build dependencies/declarations before semantic analysis when project boundaries require them.** This is Oxlint's explicit monorepo guidance ([type-aware monorepos](https://oxc.rs/docs/guide/usage/linter/type-aware.html#monorepos-and-build-outputs)).
 - **Do not promise cache sharing across tools or processes.** tsgolint shares its own TypeScript programs across its workers ([tsgolint architecture](https://github.com/oxc-project/tsgolint/blob/v7.0.2001/ARCHITECTURE.md#parallel-processing)); typescript-eslint Project Service caches within its service; a dedicated checker can reuse programs within its own run. None exposes a cache for the others.
@@ -151,7 +169,7 @@ Keep those fast cases. A future semantic complement should ask the checker for t
 
 The implementation intentionally limits itself to immutable local bindings in one function boundary and uses syntax to decide whether the later asserted type is narrower ([rule source](../../tools/oxlint/rules/no-widen-then-assert.ts)). Keep that cheap local pattern. A future semantic complement should identify the binding and use sites by `ts.Symbol`, obtain the initializer's pre-widening type and later asserted type from the same checker/program, and cover typed identifiers/call results and resolved record aliases without expanding into unconstrained interprocedural dataflow.
 
-The semantic checker should remain conservative: a checker can answer types and symbols, but it does not automatically prove application-level provenance or that a value was parsed at a boundary. Cross-function taint/provenance analysis would be a new analysis product with substantially higher complexity and false-positive risk.
+The semantic checker should remain conservative: a checker can answer types and symbols, but it does not automatically prove application-level provenance or that a value was parsed at a boundary. Cross-function taint/provenance analysis would be a new analysis product with substantially higher complexity and false-positive risk. Duplicate validation, repeated reads, persistence precedence, and runtime-work removal remain semantic/data-flow review and public-behavior test concerns rather than robust same-call AST rules.
 
 ## Decision trigger
 
@@ -162,4 +180,6 @@ Do nothing beyond the current JS rules unless one of these occurs:
 - Oxlint releases a documented custom typed-rule API; or
 - the rules are accepted upstream into typescript-eslint/tsgolint.
 
-If the first two occur before native support arrives, implement the single compiler-API checker and add only the explicit root `typescript@7.0.2` dependency. Reassess when Oxlint closes the custom-type-aware-rule issues with a released API.
+If the first two occur before native support arrives, implement the single compiler-API checker and
+add only an explicit root TypeScript dependency matching the resolved toolchain. Reassess when
+Oxlint closes the custom-type-aware-rule issues with a released API.

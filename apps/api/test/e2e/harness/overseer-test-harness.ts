@@ -1,4 +1,5 @@
 import { OVERSEER_E2E_TRACE_DATASET_NAME } from "@overseer/shared-infrastructure";
+import { OverseerSharedInfrastructure } from "@overseer/shared-infrastructure/stack";
 import { deriveTestRunIdFromStage } from "../../../src/overseer-e2e-trace-identity.ts";
 import { overseerHttpSpanNameLayer } from "../../../src/overseer-http-span-names.ts";
 import * as Cloudflare from "alchemy/Cloudflare";
@@ -66,6 +67,7 @@ interface RegisteredAfterRunCheck {
 }
 
 const testEvidenceFinalizationTimeoutMs = 25_000;
+const afterRunChecksTimeoutMs = 70_000;
 
 /** Extensible values supplied when a harness constructs one end-to-end test Effect. */
 export interface OverseerTestContext {
@@ -206,8 +208,19 @@ export class OverseerTestHarness {
       timeout: 300_000,
     });
 
+    const sharedInfrastructureDeployment = alchemyTest.beforeAll(
+      alchemyTest.deploy(OverseerSharedInfrastructure),
+      { timeout: 600_000 },
+    );
+    // Vite+ runs afterAll hooks in reverse registration order: shared teardown is registered first.
+    alchemyTest.afterAll.skipIf(testRun.target === "local")(
+      alchemyTest.destroy(OverseerSharedInfrastructure),
+      { timeout: 300_000 },
+    );
+
     const deployment = alchemyTest.beforeAll(
       Effect.gen(function* () {
+        yield* sharedInfrastructureDeployment;
         const output = yield* alchemyTest.deploy(stack);
         const resolved = yield* resolveOverseerApiDeployment(testRun.target, output);
         yield* waitForOverseerApiDeployment(resolved);
@@ -226,7 +239,7 @@ export class OverseerTestHarness {
       timeout: 300_000,
     });
 
-    // Vitest runs afterAll hooks in reverse registration order, so evidence finalizes before teardown.
+    // Reverse hook order finalizes evidence after trace acceptance and before Stack teardown.
     afterAll(async () => {
       try {
         if (Option.isNone(runSnapshot)) return;
@@ -260,28 +273,33 @@ export class OverseerTestHarness {
       }
     });
 
-    afterAll(async () => {
-      if (
-        afterRunChecks.length === 0 ||
-        Option.isNone(resolvedAxiomDeployment) ||
-        Option.isNone(runSnapshot)
-      ) {
-        return;
-      }
-      const completedRun = runSnapshot.value;
-      await Effect.runPromise(
-        Effect.forEach(afterRunChecks, (check) => check.makeEffect({ run: completedRun }), {
-          discard: true,
-        }).pipe(
-          Effect.provide(axiomTraceQueryLayer(resolvedAxiomDeployment.value)),
-          Effect.onExit((exit) =>
-            Effect.sync(() => {
-              if (Exit.isFailure(exit)) infrastructureFailed = true;
-            }),
+    // Alchemy defers its sidecar-close hook to a microtask. Defer once more so Vite+'s reverse
+    // afterAll order runs acceptance checks before closing workerd, allowing its final trace batch
+    // to flush while the checks poll Axiom.
+    queueMicrotask(() => {
+      afterAll(async () => {
+        if (
+          afterRunChecks.length === 0 ||
+          Option.isNone(resolvedAxiomDeployment) ||
+          Option.isNone(runSnapshot)
+        ) {
+          return;
+        }
+        const completedRun = runSnapshot.value;
+        await Effect.runPromise(
+          Effect.forEach(afterRunChecks, (check) => check.makeEffect({ run: completedRun }), {
+            discard: true,
+          }).pipe(
+            Effect.provide(axiomTraceQueryLayer(resolvedAxiomDeployment.value)),
+            Effect.onExit((exit) =>
+              Effect.sync(() => {
+                if (Exit.isFailure(exit)) infrastructureFailed = true;
+              }),
+            ),
           ),
-        ),
-      );
-    }, 35_000);
+        );
+      }, afterRunChecksTimeoutMs);
+    });
 
     const apiClientLayer = Layer.unwrap(deployment.pipe(Effect.map(overseerApiClientLayer)));
     const tracingLayer = Layer.unwrap(axiomDeployment.pipe(Effect.map(testExecutionTracingLayer)));

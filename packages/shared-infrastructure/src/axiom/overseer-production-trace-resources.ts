@@ -1,4 +1,5 @@
 import * as Axiom from "alchemy/Axiom";
+import * as RemovalPolicy from "alchemy/RemovalPolicy";
 
 import {
   OVERSEER_PRODUCTION_TRACE_DATASET_NAME,
@@ -17,7 +18,7 @@ export const OverseerProductionTracesDatasetResource = Axiom.Dataset(
     retentionDays: 30,
     useRetentionPeriod: true,
   },
-);
+).pipe(RemovalPolicy.retain());
 
 /** Least-privilege Axiom token that can only ingest Overseer production traces. */
 export const OverseerProductionTraceIngestTokenResource = Axiom.ApiToken(

@@ -33,4 +33,4 @@ export const cloudflareEventQueuePublisherLayer = Layer.effect(
       }, Effect.withSpan("OverseerEventPublisher.publishOverseerEvent")),
     });
   }),
-);
+).pipe(Layer.provide(Cloudflare.Queues.WriteQueueBinding));

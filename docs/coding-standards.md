@@ -22,37 +22,103 @@ framework wiring, app-specific configuration, and final Layer or dependency comp
 app; place reusable behavior behind package public entrypoints. This is an incremental direction,
 not a requirement to relocate existing app-local modules before another owner needs them.
 
-## Parse, Do Not Validate
+## Environment-Isolated Infrastructure
 
-Parse every value as soon as it crosses an I/O boundary. Treat HTTP, RPC, persistence,
-configuration, files, queues, platform APIs, and third-party clients as sources of untrusted
-external representations, even when TypeScript declarations claim otherwise.
+Every environment receives isolated infrastructure with the same capability topology. Production
+and preview/test stages provision stage-owned live resources. Local stages use faithful local
+providers where Alchemy supplies them; when one unavailable local dependency forces a connected
+subsystem to remain live, provision that complete subsystem as isolated stage-owned infrastructure
+and document the exception. Never route local, preview, or test application data through production
+resources merely because production already exists.
 
-Parsing must return a validated, meaningful domain or application type. Do not perform a boolean
-validation check and then continue passing the original primitive, record, or transport type
-inward. Encode constraints in schemas, branded types, smart constructors, and discriminated unions
-so invalid states cannot enter inner modules.
+A resource definition's package location does not by itself determine which Stack owns its
+lifecycle. Keep cohesive shared infrastructure definitions in `packages/shared-infrastructure` and
+assign ownership to the Stack whose lifecycle should create, replace, and destroy the resource.
+Do not duplicate a shared resource in an application Stack merely to make local development work.
 
-Construct each schema parser once at module scope beside its owning schema instead of constructing
-it inline at every boundary. Give the parser a domain-specific name and export it when other
-boundaries parse the same representation:
+When an application depends on a shared-infrastructure Stack, lifecycle orchestration must preserve
+both dependency order and environment identity. Provision the shared Stack before the application
+Stack and destroy it after the application Stack. Production, preview, test, and local deployments
+that require isolated shared resources must use the same Alchemy stage and provider mode for both
+Stacks. Vite task dependencies may enforce fixed production ordering; dynamically generated test
+stages must be propagated by the test runner or harness because a static prerequisite cannot infer a
+stage generated inside a later command.
+
+Alchemy selects local versus live providers when the owning resource is provisioned. A Queue owned
+by a shared Stack receives a `dev:` identity and local broker only when that shared Stack itself runs
+with `alchemy dev` or `Test.make({ dev: true })`. A local application that instead references the
+production shared Stack receives a live Queue identity; task ordering alone does not turn that
+cross-stage resource into a local Queue. Use the same native `WriteQueueBinding` in local and
+deployed Workers, and correct the owning Stack's stage/provider orchestration rather than replacing
+the binding with an HTTP capability.
+
+Keep globally permanent resources in an explicitly permanent stage only when sharing them across
+application stages is an explicit exception, such as temporarily shared observability datasets or
+reusable account policies. A stage-specific shared Stack may reference those permanent outputs while
+owning all resources that require stage isolation, but do not silently provision fixed-name account
+resources once per preview. Production may retain established physical names; non-production
+resources must use Alchemy-generated or explicitly stage-qualified names. Retention policies must
+also be environment-aware so ephemeral infrastructure is destroyable.
+
+For every cross-Stack dependency, document whether the resource is permanent or stage-isolated,
+which Stack owns it, how local provider selection occurs, and how creation and destruction are
+ordered. Package organization and task dependencies support this model but are not substitutes for
+lifecycle ownership, stage isolation, or provider-mode correctness.
+
+## Provenance and Parsing
+
+Choose validation from evidence about the value's origin:
+
+| Input evidence                                                                                                                           | Required handling                                                                                                                                                         |
+| ---------------------------------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Unknown external or persisted input, including raw SQL rows, native storage, and untyped bodies                                          | Decode from `unknown` with the owning boundary schema into the strongest meaningful type. SQL generic annotations and declaration files are not runtime evidence.         |
+| A known encoded representation such as JSON text, a string when the codec's `Encoded` type is `string`, or another declared encoded type | Use a typed decoder only when its input is assignable to that exact encoded type. Validate the contents; otherwise preserve honest boundary decoding rather than casting. |
+| An established domain or application value                                                                                               | Pass it unchanged without parsing or representation round trips.                                                                                                          |
+| A newly computed constrained value or patched state                                                                                      | Establish the new invariant with the owning constructor, refinement, or schema transformation.                                                                            |
+
+The Adapter that owns an I/O boundary owns its translation and parse errors. Domain Modules and
+Application Services receive parsed domain/application values rather than request payloads,
+database rows, environment strings, vendor records, or other boundary representations. Encode a
+rich value only when crossing an output boundary that requires the encoded representation.
+
+Instantiate a reusable codec once, privately, beside its owner. Expose a domain-named application
+parser with the actual input type and a unary signature unless real consumers require additional
+domain inputs. A direct export of a `Schema.decode*` factory also exposes library `ParseOptions`, so
+it is not the default application API.
+
+At a genuinely unknown boundary, keep unknown decoding private to the Adapter and let the framework
+supply the raw input type:
 
 ```ts
-export const parseCreateIssueCommand = Schema.decodeUnknownEffect(CreateIssueCommand);
+const decodeCreateIssueCommand = Schema.decodeUnknownEffect(CreateIssueCommand);
 
-const command = yield * parseCreateIssueCommand(requestBody);
+const command = yield * decodeCreateIssueCommand(requestBody);
 return yield * issueService.createIssue(command);
 ```
 
-Do not repeat inline constructions such as
-`Schema.decodeUnknownEffect(CreateIssueCommand)(requestBody)`. Reuse the schema-owned parser so
-callers share the same decoding behavior and can find every parse site by its domain-specific name.
+For a known encoded string, use a schema whose encoded type is actually `string`, then preserve that
+input through a narrow wrapper:
 
-The Adapter that owns the boundary owns this translation and its parse errors. Domain Modules and
-Application Services accept parsed domain/application values and must not know about request
-payloads, database rows, environment strings, vendor records, or other boundary representations.
-When data leaves the application, encode rich values back into the exact external representation
-required by that boundary.
+```ts
+const InfrastructureStage = Schema.String.check(
+  Schema.isPattern(/^[a-z0-9](?:[a-z0-9-]*[a-z0-9])?$/),
+).pipe(Schema.brand("InfrastructureStage"));
+const decodeInfrastructureStage = Schema.decodeEffect(InfrastructureStage);
+
+export const parseInfrastructureStage = (input: string) => decodeInfrastructureStage(input);
+```
+
+`Schema.decodeEffect` accepts the codec's `Encoded` type, not any value that happens to be known. A
+raw `string` therefore cannot be passed to a codec whose encoded type is a literal union. Preserve
+honest unknown-boundary decoding when the source does not match the encoded type; never cast to
+force typed decoding.
+
+A deliberately low-level public codec may expose unknown input or parse options when those are part
+of its real contract; document that boundary instead of disguising it with aliases or casts. Typed
+decoder substitution changes the function contract but does not by itself remove runtime validation.
+
+**Complete when:** the producer, established invariants, remaining invariants, owning parser, and
+validation removed, retained, or moved are identified for every changed value.
 
 ## Preserve Established Type Information
 
@@ -81,54 +147,25 @@ const transformOperation = (operation: OpenApiOperation): OpenApiOperation => {
 
 ### Refine Known Values Without Widening
 
-Once a boundary has parsed a value, every later operation must accept that established type rather
-than treating the value as untrusted input again. Model additional checks as a typed refinement or
-transformation from the known source type to a stronger target type.
+Once a boundary has parsed a value, later operations accept that established type. When a
+calculation, patch, or combination introduces an additional constraint, transform from the known
+source type to a stronger target with its owning constructor or a typed `Schema.decodeTo`
+composition. Use `Schema.decodeEffect` so the composed schema's encoded side remains the precise
+source type.
 
-Effect Schema transformations are not limited to `unknown -> Type`. Compose the schema that owns the
-established source type with the stronger target schema using `Schema.decodeTo`, then expose
-`Schema.decodeEffect`. The composed schema's encoded side remains the source schema's `Encoded` type,
-so the inferred refinement cannot accept unrelated values:
-
-```ts
-const CompleteWorkOSRole = WorkOS.Role.pipe(
-  Schema.decodeTo(
-    Schema.Struct({
-      id: Schema.String,
-      slug: Schema.String,
-      name: Schema.String,
-      description: Schema.NullOr(Schema.String),
-      type: Schema.Literals(["EnvironmentRole", "OrganizationRole"]),
-      resource_type_slug: Schema.String,
-      permissions: Schema.Array(Schema.String),
-      created_at: Schema.String,
-      updated_at: Schema.String,
-    }),
-  ),
-);
-
-type CompleteWorkOSRole = typeof CompleteWorkOSRole.Type;
-
-const refineCompleteWorkOSRole = Schema.decodeEffect(CompleteWorkOSRole);
-// (role: WorkOS.Role) => Effect.Effect<CompleteWorkOSRole, Schema.SchemaError>
-```
-
-When source and target representations differ, provide `Schema.decodeTo` with typed transformations
-between the source schema's `Type` and the target schema's `Encoded` type. The resulting decoder must
-still use `Schema.decodeEffect` so its input remains the composed schema's precise `Encoded` type.
-Use `Schema.encodeEffect` on the same composed schema when the reverse transformation is required.
+Field brands, `satisfies`, and static types do not prove cross-field persisted facts or newly
+computed range and state constraints. Retain the runtime refinement that owns those facts. Establish
+the stronger value directly rather than constructing or encoding JSON only to parse an existing
+domain value again.
 
 Do not expose `Schema.decodeUnknown*`, an `unknown` parameter, or another broad decoder for an
-operation whose callers already hold `WorkOS.Role`, a domain value, a parsed command, or any other
-precise type. That broad contract discards provenance, permits invalid call sites, and turns mistakes
-that the compiler could reject into runtime parse failures. Do not wrap a private unknown decoder
-when Effect Schema can represent the typed source directly; make the source schema part of the
-composed schema instead.
+operation whose callers already hold a domain value, parsed command, or other precise type. That
+contract discards provenance and turns compiler-rejected mistakes into runtime parse failures.
 
 Prefer, in order, a composed Effect Schema whose source schema owns the established input type, a
 typed smart constructor, or a typed refinement function when no source schema exists. Name the
-operation for what it does—`refineCompleteWorkOSRole` or `toAlchemyRoleState`, for example—rather
-than calling an already parsed value an unknown-input parse.
+operation for what it does—`refineIssueTransition` or `toPersistedIssue`, for example—rather than
+calling an already parsed value an unknown-input parse.
 
 Apply the same rule to encoding and intermediate representations. A known value must not pass through
 `unknown`, `object`, a generic record, JSON, or a broader primitive merely to make a transformation
@@ -142,11 +179,10 @@ type information and later reconstructs it with `as`, redesign the boundary.
 
 Reserve `unknown` for values that genuinely cross an untrusted runtime boundary, such as parsed
 JSON, HTTP or RPC input, persistence, configuration, files, queues, platform APIs, or untyped
-third-party callbacks. Do not expose application-owned functions with explicit `unknown`
-parameters. Define the expected Effect Schema and expose its decoder directly with
-`Schema.decodeUnknownEffect(ExpectedSchema)` so the unknown input exists only in the schema-owned
-boundary function. Values created by our code, returned by a typed API, or already parsed are not
-unknown. Do not widen them because the receiving API has an inconvenient signature.
+third-party callbacks. Keep the unknown decoder private to the owning Adapter unless callers truly
+need a low-level codec API. Application parser wrappers expose the representation callers actually
+hold and only the domain inputs they need. Values created by our code, returned by a typed API, or
+already parsed are not unknown; preserve their type even when a receiving API is inconvenient.
 
 Parse genuinely unknown input once, at the nearest Adapter, I/O boundary, or composition root, into
 the strongest meaningful type. Convert every generic record into a strongly typed domain,
@@ -177,6 +213,12 @@ been widened by our own code; the assertion must not chain through `unknown` or 
 upstream limitation, runtime evidence, and focused verification must be documented. Convenience,
 framework folklore, and "this callback always passes that type" are not evidence.
 
+Use precise owner-provided types or generics instead of `any`, and branch or refine optional values
+before use instead of applying a non-null assertion. Treat ordinary explicit `any` and non-null
+assertions as review blockers. An unavoidable platform-boundary exception follows the same smallest-
+owner, runtime-evidence, safety-comment, and focused-verification requirements as an assertion, plus
+any targeted suppression required by the configured lint policy.
+
 Treat the following as review blockers:
 
 - `as unknown as` or `as any as`;
@@ -191,38 +233,48 @@ The governing rule is: **preserve evidence already established, create evidence 
 unknown input at its boundary, and never fabricate evidence with an assertion after throwing it
 away.**
 
-Enforce this policy with generic Oxlint rules rather than framework- or project-specific names:
+The root `vite.config.ts` and the plugin entrypoints it loads own the installed lint rule set. Read
+them rather than copying a rule catalog into policy. Native `typescript/*` rules can use the
+separate type-aware backend; JavaScript Oxlint plugins receive syntax and scopes, not TypeScript
+inferred types, even when root typechecking is enabled. Keep custom diagnostics conservative and
+use type-aware rules, tests, and review for semantic cases. See
+[`research/slop-prevention.md`](research/slop-prevention.md) for proposals and
+[`research/oxlint-custom-type-aware-rules.md`](research/oxlint-custom-type-aware-rules.md) for the
+pinned tooling boundary.
 
-- `typescript/consistent-type-assertions` with `assertionStyle: "never"` rejects ordinary `as T`
-  and angle-bracket assertions while permitting `as const` and `satisfies`.
-- `typescript/no-unsafe-type-assertion` and `typescript/no-unnecessary-type-assertion` provide
-  type-aware diagnostics for unsafe narrowing and redundant assertions.
-- `typescript/no-explicit-any` and `typescript/no-non-null-assertion` reject common type-system
-  escape hatches.
-- `anti-slop/no-chained-type-assertions` identifies nested assertion chains and directs the caller
-  to preserve the original type or parse at the boundary.
-- `anti-slop/no-conditional-empty-object-spread` rejects conditional empty-object spreads and fixes
-  equivalent direct-property declarations.
-- `anti-slop/no-known-value-widening` conservatively detects syntactically established values
-  assigned or returned through explicit `unknown`, `object`, or generic-record annotations.
-- `anti-slop/no-record-type` rejects TypeScript `Record` utility types so each data contract keeps an
-  owner-provided or schema-derived type.
-- `anti-slop/no-runtime-typeof` rejects runtime `typeof` narrowing in favor of parsing the expected
-  contract.
-- `anti-slop/no-shape-in-symbol-names` rejects the term `shape` in symbol names so identifiers state
-  the concrete domain, protocol, or runtime concept they represent.
-- `anti-slop/no-unknown-parameters` rejects explicit `unknown` function parameters and directs I/O
-  adapters to expose `Schema.decodeUnknownEffect(ExpectedSchema)` instead.
-- `anti-slop/no-widen-then-assert` detects immutable local flows that erase a known type and later
-  reconstruct it with an assertion.
+## Persistence Provenance and Recovery
 
-Diagnostics for these rules must be agent-friendly: identify the lost type evidence or binding when
-available, explain why the operation is invalid, and state whether the correction is to preserve the
-precise type or parse genuinely unknown input at its boundary. JavaScript Oxlint plugins currently
-receive the Oxc AST and scope manager but not Oxlint's native type-checker results. Keep custom rules
-conservative: do not report imported values, typed call results, parser arguments, or cross-function
-flows when their provenance cannot be proven syntactically. A clean custom-lint result does not
-prove that library types were preserved; type-aware native rules and review still own semantic cases.
+Select current versus legacy representations from explicit source, version, or discriminator
+evidence before decoding. Once evidence selects the current or higher-priority representation, a
+parse failure is corruption: fail without rescuing it through a weaker legacy decoder. Preserve the
+raw evidence needed for diagnosis and recovery.
+
+Migration writes are atomic with their authority checks. Preserve receipts, outboxes, tombstones,
+pending or uncertain external effects, compensation evidence, and transaction/effect order. A
+simpler branch structure is not evidence that restart or response-loss behavior remains correct.
+
+**Complete when:** valid current and legacy cases pass; malformed higher-priority evidence fails even
+when lower-priority data is valid; migration failure commits no partial authority change; and
+interruption or uncertain external mutation outcomes retain their recovery evidence.
+
+## Cohesion and Complexity
+
+Use the repository's configured lint policy; no numeric complexity ceiling is implied by another
+project. Reduce complexity by extracting cohesive responsibilities with precise domain inputs,
+expected errors, Effect requirements, and effect order intact. Branch-count reductions, forwarding
+helpers, speculative generics, dispatch tables, suppressions, and option bags do not by themselves
+make a design simpler. Remove an option, helper, or export only after checking real consumers and
+public compatibility.
+
+Before adding or changing tests or verification harnesses, apply
+[`docs/testing.md`](testing.md), including its real-interface and module-mocking requirements.
+
+For parser, persistence, or refinement changes, verify through the public interface with faithful
+implementations and real SQLite where applicable. Cover corruption and representation precedence,
+valid migration, each independent cross-field invariant, and the complete public parser function
+type: input, arity, success, error, and Effect requirements. Distinguish runtime work removed from a
+decoder rename. Native restart evidence is stronger than reconstructed in-memory state; describe
+the evidence actually run.
 
 ## OpenAPI Contract Generation
 

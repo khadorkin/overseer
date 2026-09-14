@@ -33,11 +33,12 @@ Every deployed test invocation:
 
 1. Reconciles the independently managed production shared-infrastructure Stack that owns the reusable human Access policy, using `OVERSEER_ACCESS_ALLOWED_EMAIL` as its single allowlisted address.
 2. Generates a unique DNS-safe Alchemy stage such as `test-<user>-<timestamp>-<entropy>`.
-3. Deploys a fresh `OverseerApi` Stack through the real providers and references that shared policy without transferring ownership.
-4. Waits for the Access-protected API Worker and Workspace Durable Object to become ready.
-5. Runs the registered feature tests.
-6. Destroys the Stack and its test data through the Vitest lifecycle hook.
-7. Runs outer fallback cleanup only if the deployed test process fails or is interrupted.
+3. Deploys `OverseerSharedInfrastructure/<stage>` with an isolated Queue and complete isolated event-data subsystem.
+4. Deploys a fresh `Overseer/<stage>` API Stack through the same provider mode and references both the stage-owned Queue and the permanent Access policy without transferring ownership.
+5. Waits for the Access-protected API Worker and Workspace Durable Object to become ready.
+6. Runs the registered feature tests.
+7. Destroys the API Stack and then the shared-infrastructure Stack through Vitest lifecycle hooks.
+8. Runs outer fallback cleanup in the same reverse dependency order only if the deployed test process fails or is interrupted.
 
 Assume provisioning test infrastructure is cheap, fast, and free. Cost is not a reason to reuse infrastructure, skip a deployed provider boundary, or replace deployed-stack coverage with a local runtime.
 
@@ -211,4 +212,4 @@ pnpm test:e2e:deployed    # explicit alias for real Cloudflare API acceptance
 
 Inspect retained traces in Axiom's OpenTelemetry Traces app by searching the `overseer-e2e-traces` dataset for the trace ID stored in execution evidence. E2E runtimes receive only the ingest token; acceptance tooling receives only the query token.
 
-The outer runner generates a unique stage for every invocation. Deployed runs use Alchemy's Vitest `afterAll(destroy(Stack))` hook as primary teardown; the outer runner invokes fallback destruction only after failure or interruption. Local runs first close the dev sidecar, then let the outer runner destroy local Stack state to avoid the pinned sidecar teardown deadlock.
+The outer runner generates a unique stage for every invocation. The harness deploys the shared-infrastructure Stack before the API Stack through one Alchemy Vitest instance, preserving the generated stage and provider mode. Deployed runs use Alchemy's Vitest `afterAll(destroy(Stack))` hooks as primary teardown; the outer runner invokes fallback destruction only after failure or interruption. Local runs first close the dev sidecar, then let the outer runner destroy API and shared local Stack state in that order to avoid the pinned sidecar teardown deadlock.

@@ -1,4 +1,3 @@
-import * as Alchemy from "alchemy";
 import * as Cloudflare from "alchemy/Cloudflare";
 import { Effect, FileSystem, Layer, Option, Path } from "effect";
 import { Etag, HttpPlatform, HttpRouter } from "effect/unstable/http";
@@ -8,6 +7,8 @@ import {
   accessAuthenticationMiddlewareLayer,
 } from "./access-authentication-middleware.ts";
 import { overseerHttpHandlersLayer } from "./overseer-http-handlers.ts";
+import { OverseerEventPublisher } from "./events/event-publisher.ts";
+import { cloudflareEventQueuePublisherLayer } from "./events/cloudflare-event-queue-publisher.ts";
 import type { WorkspaceServer } from "./durable-objects/workspaces/workspace-server.ts";
 import { OverseerApiAccessDeployment } from "./overseer-api-access.ts";
 import { OverseerApiHostname } from "./overseer-api-hostname.ts";
@@ -42,11 +43,7 @@ export class ApiWorker extends Cloudflare.Worker<ApiWorker, {}, WorkspaceServer>
 /** Provides the Overseer API Worker with its hosted Durable Object implementations. */
 const apiWorkerLayer = ApiWorker.make(
   Effect.gen(function* () {
-    const stage = yield* Alchemy.Stage;
-    const workerName =
-      stage === "production" ? "overseer-api" : `overseer-api-${stage.replaceAll("_", "-")}`;
     const commonProps = {
-      name: workerName,
       main: import.meta.url,
       dev: {
         port: 8787,
@@ -80,6 +77,8 @@ const apiWorkerLayer = ApiWorker.make(
   Effect.gen(function* () {
     const accessAuthenticationMiddleware = yield* AccessAuthenticationMiddleware;
     const requestIdMiddleware = yield* RequestIdMiddleware;
+    // Initialize the publisher during Worker init so the native WriteQueueBinding is registered.
+    yield* OverseerEventPublisher;
 
     const fetch = yield* HttpRouter.toHttpEffect(
       HttpApiBuilder.layer(OverseerHttpApi).pipe(
@@ -98,6 +97,7 @@ const apiWorkerLayer = ApiWorker.make(
   }).pipe(
     Effect.provide(overseerAxiomTraceTelemetryLayer),
     Effect.provide(overseerSdkLayer),
+    Effect.provide(cloudflareEventQueuePublisherLayer),
     Effect.provide(accessAuthenticationMiddlewareLayer),
     Effect.provide(cloudflareRequestIdMiddlewareLayer),
   ),

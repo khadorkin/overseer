@@ -16,7 +16,11 @@ import {
 class OverseerEndToEndCommandFailed extends Schema.TaggedError<OverseerEndToEndCommandFailed>()(
   "OverseerEndToEndCommandFailed",
   {
-    command: Schema.Literals(["alchemy destroy", "vp test"]),
+    command: Schema.Literals([
+      "alchemy destroy Overseer",
+      "alchemy destroy OverseerSharedInfrastructure",
+      "vp test",
+    ]),
     exitCode: Schema.Number,
   },
 ) {
@@ -52,7 +56,7 @@ export const makeOverseerTestRun = Effect.fn("makeOverseerTestRun")(function* (
 });
 
 const runOverseerCommand = Effect.fn("runOverseerCommand")(function* (
-  name: "alchemy destroy" | "vp test",
+  name: "alchemy destroy Overseer" | "alchemy destroy OverseerSharedInfrastructure" | "vp test",
   command: ChildProcess.Command,
 ) {
   const childProcessSpawner = yield* ChildProcessSpawner.ChildProcessSpawner;
@@ -89,21 +93,39 @@ const runOverseerEndToEndTests = Effect.fn("runOverseerEndToEndTests")(function*
     }),
   );
 
-  const destroyTestStack = runOverseerCommand(
-    "alchemy destroy",
-    ChildProcess.make("alchemy", ["destroy", "--yes", "--stage", testRun.stage, "alchemy.run.ts"], {
-      stdin: "inherit",
-      stdout: "inherit",
-      stderr: "inherit",
-      extendEnv: true,
-      env: { ALCHEMY_DEV: alchemyDev },
-    }),
-  );
+  const makeDestroyCommand = (
+    name: "alchemy destroy Overseer" | "alchemy destroy OverseerSharedInfrastructure",
+    workingDirectory: string,
+  ) =>
+    runOverseerCommand(
+      name,
+      ChildProcess.make(
+        "alchemy",
+        ["destroy", "--yes", "--stage", testRun.stage, "alchemy.run.ts"],
+        {
+          cwd: workingDirectory,
+          stdin: "inherit",
+          stdout: "inherit",
+          stderr: "inherit",
+          extendEnv: true,
+          env: { ALCHEMY_DEV: alchemyDev },
+        },
+      ),
+    );
+
+  const destroyTestStacks = Effect.gen(function* () {
+    // API bindings and local workerd state must disappear before their shared resources.
+    yield* makeDestroyCommand("alchemy destroy Overseer", process.cwd());
+    yield* makeDestroyCommand(
+      "alchemy destroy OverseerSharedInfrastructure",
+      resolve(process.cwd(), "../../packages/shared-infrastructure"),
+    );
+  });
 
   return yield* runTests.pipe(
     Effect.onExit((testExit) => {
       if (target !== "local" && Exit.isSuccess(testExit)) return Effect.void;
-      return Exit.isFailure(testExit) ? Effect.ignore(destroyTestStack) : destroyTestStack;
+      return Exit.isFailure(testExit) ? Effect.ignore(destroyTestStacks) : destroyTestStacks;
     }),
   );
 });

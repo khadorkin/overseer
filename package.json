@@ -21,7 +21,7 @@
     "test:e2e": "vp run --no-cache @overseer/api#test:e2e:deployed",
     "test:e2e:deployed": "vp run --no-cache @overseer/api#test:e2e:deployed",
     "test:e2e:local": "vp run --no-cache @overseer/api#test:e2e:local",
-    "test:unit": "vp test run tools/oxlint && vp run @overseer/api#test:unit"
+    "test:unit": "vp test run tools/oxlint && vp run @overseer/shared-infrastructure#test:unit && vp run @overseer/api#test:unit"
   },
   "devDependencies": {
     "@effect/platform-node": "4.0.0-rc.112",

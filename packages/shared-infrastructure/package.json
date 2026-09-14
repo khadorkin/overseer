@@ -4,7 +4,11 @@
   "private": true,
   "type": "module",
   "exports": {
-    ".": "./src/index.ts"
+    ".": "./src/index.ts",
+    "./stack": "./src/overseer-shared-infrastructure.ts"
+  },
+  "scripts": {
+    "test:unit": "vp test run src"
   },
   "dependencies": {
     "alchemy": "2.0.0-beta.76",
